@@ -3,7 +3,10 @@ import neat
 import time
 import os
 import random
+import pickle
 pygame.font.init()
+
+GEN = 0
 
 # Screen size
 WIN_WIDTH = 500
@@ -184,7 +187,7 @@ class Base:
         win.blit(self.IMG, (self.x2, self.y))
 
 
-def draw_window(win, bird, pipes, base, score):
+def draw_window(win, birds, pipes, base, score, gen):
     # Draw the Background
     win.blit(BG_IMG, (0, 0))
 
@@ -200,16 +203,42 @@ def draw_window(win, bird, pipes, base, score):
     text = STAT_FONT.render("Score: " + str(score), 1, (255, 255, 255))
     win.blit(text, (WIN_WIDTH - 10 - text.get_width(), 10))
 
+    # Draw the Generation Shadow
+    text = STAT_FONT.render("Gen: " + str(gen), 1, (0, 0, 0))
+    win.blit(text, (11, 11))
+
+    # Draw the Generation
+    text = STAT_FONT.render("Gen: " + str(gen), 1, (255, 30, 30))
+    win.blit(text, (10, 10))
+
     # Draw the Base
     base.draw(win)
 
     # Draw the Bird
-    bird.draw(win)
+    for bird in birds:
+        bird.draw(win)
     pygame.display.update()
 
 
-def main():
-    bird = Bird(230, 350)
+def main(genomes, config):
+    global GEN
+    GEN += 1
+    # Three parrallel lists where the position i is the data for the ith bird
+    nets = []
+    ge = []
+    birds = []
+
+    for genome_id, genome in genomes:
+        # start with fitness level of 0
+        genome.fitness = 0
+        # Setup a neural network
+        net = neat.nn.FeedForwardNetwork.create(genome, config)
+        nets.append(net)
+        # Create the bird
+        birds.append(Bird(230, 350))
+        # Create a genome for the specific bird
+        ge.append(genome)
+
     base = Base(730)
     pipes = [Pipe(600)]
 
@@ -224,40 +253,100 @@ def main():
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 run = False
-        # bird.move()
+                pygame.quit()
+                quit()
+
+        pipe_ind = 0
+        if len(birds) > 0:
+            if len(pipes) > 1 and birds[0].x > pipes[0].x + pipes[0].PIPE_TOP.get_width():
+                pipe_ind = 1
+        else:
+            run = False
+            break
+
+        for x, bird in enumerate(birds):
+            # Move birds
+            bird.move()
+            # Motivate the birds to move
+            ge[x].fitness += 0.1
+            # Bird jump if the activation function is greater than 0.5
+            output = nets[x].activate((bird.y, abs(
+                bird.y - pipes[pipe_ind].height), abs(bird.y - pipes[pipe_ind].bottom)))
+
+            if output[0] > 0.5:
+                bird.jump()
+
         remove_pipe = []
         add_pipe = False
         for pipe in pipes:
 
-            if pipe.collide(bird):
-                pass
+            pipe.move()
+
+            for x, bird in enumerate(birds):
+                if pipe.collide(bird):
+                    # Lose one point because it hitted a pipe
+                    ge[x].fitness -= 1
+                    birds.pop(x)
+                    nets.pop(x)
+                    ge.pop(x)
+
+                if not pipe.passed and pipe.x < bird.x:
+                    pipe.passed = True
+                    add_pipe = True
 
             if pipe.x + pipe.PIPE_TOP.get_width() < 0:
                 remove_pipe.append(pipe)
 
-            if not pipe.passed and pipe.x < bird.x:
-                pipe.passed = True
-                add_pipe = True
-
-            pipe.move()
-
         if add_pipe:
             score += 1
+            # Reward the bird if it passed a pipe
+            for g in ge:
+                g.fitness += 5
+            # Create a new Pipe
             pipes.append(Pipe(600))
 
         # Remove all the pipes in the remove_pipe list
         for r in remove_pipe:
             pipes.remove(r)
 
-        # if we touched the ground
-        if bird.y + bird.img.get_height() >= 730:
-            pass
+        for x, bird in enumerate(birds):
+            # if we touched the ground
+            if bird.y + bird.img.get_height() >= 730 or bird.y < 0:
+                ge[x].fitness -= 1
+                birds.pop(x)
+                nets.pop(x)
+                ge.pop(x)
 
         base.move()
-        draw_window(win, bird, pipes, base, score)
+        draw_window(win, birds, pipes, base, score, GEN)
+        # break if score gets large enough
+        if score > 20:
+            pickle.dump(nets[0], open("best.pickle", "wb"))
+            break
 
-    pygame.quit()
-    quit()
+
+def run(config_path):
+    # Load the configuration file
+    config = neat.config.Config(neat.DefaultGenome, neat.DefaultReproduction,
+                                neat.DefaultSpeciesSet, neat.DefaultStagnation, config_path)
+    # Crete a population
+    p = neat.Population(config)
+
+    # Print Statistics in CMD
+    p.add_reporter(neat.StdOutReporter(True))
+    stats = neat.StatisticsReporter()
+    p.add_reporter(stats)
+
+    # Generations for the neat function, call the main function 50 times
+    winner = p.run(main, 50)
+
+    # show final stats
+    print('\nBest genome:\n{!s}'.format(winner))
 
 
-main()
+if __name__ == "__main__":
+    # Find the local directory
+    local_dir = os.path.dirname(__file__)
+    # Load the configuration file
+    config_path = os.path.join(local_dir, "config-feedforward.txt")
+    run(config_path)
